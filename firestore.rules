@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function role() { return signedIn() && request.auth.token.role != null ? request.auth.token.role : 'citizen'; }
+    function isStaff() { return role() in ['ward_officer', 'dept_admin', 'super_admin']; }
+
+    // Reference data: public read, written only by seed/admin tooling
+    match /{col}/{id} {
+      allow read: if col in ['wards', 'roadOwners', 'categories', 'config'];
+      allow write: if false;
+    }
+
+    match /campaigns/{id} {
+      allow read: if resource.data.status == 'published' || isStaff();
+      allow write: if isStaff();
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isStaff());
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.get('role', 'citizen') == 'citizen';
+      allow update: if signedIn() && request.auth.uid == uid
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']);
+    }
+
+    match /complaints/{id} {
+      allow read: if true; // public transparency; no personal data is stored in this document
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.status == 'submitted'
+        && request.resource.data.category == 'road_damage'
+        && request.resource.data.description is string
+        && request.resource.data.description.size() >= 10
+        && request.resource.data.description.size() <= 500
+        && request.resource.data.upvoteCount == 0
+        && request.resource.data.createdAt == request.time;
+      allow update: if isStaff();
+      allow delete: if role() == 'super_admin';
+
+      match /updates/{uid} {
+        allow read: if resource.data.visibility == 'public' || isStaff();
+        allow create: if isStaff();
+      }
+      match /upvotes/{uid} {
+        allow read: if true;
+        allow create, delete: if signedIn() && request.auth.uid == uid;
+      }
+    }
+  }
+}
